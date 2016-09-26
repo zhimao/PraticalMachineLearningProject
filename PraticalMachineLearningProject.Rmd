@@ -1,0 +1,178 @@
+---
+title: "Pratical Machine Learning Project"
+output: html_document
+author: Zhimao He
+---
+
+### Introduction 
+The goal of this project is to predict the manner the participants did the exercise, which is the "classe" variable in the training set. This is the report for how we conclude the model, how we cross validate the model, what the expected out of sample error is for the model. The final model will be used to predict 20 test cases.
+
+###  About the data
+The data contains accelerometers on the belt, forearm, arm, and dumbell of 6 participants.They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Data analysis
+First, we load the data, and explore the data and see what is useful to build our data and what is not so interesting. 
+#### Read teh data
+```{r ReadData}
+## Reading the data
+training = read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"))
+validation = read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"))
+```
+
+####  Exploring the data
+Since we find out that there were some empty and junk data, we reload the data and replace they with NA.
+```{r ReadDataReplaceEmpty, results="hide"}
+## Look at the data structure
+str(training, list.len=ncol(training))
+## Reading the data
+training = read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"), na.strings=c("NA","#DIV/0!",""))
+validation = read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"), na.strings=c("NA","#DIV/0!",""))
+summary(training)
+```
+
+#### Cleaning the data
+From the summary, we can see that, there are a lot of variables, in fact 160 of them in the data. A lot of variables could introduce noise and some of them might not have coorlation Thre are some columns that we don't care for the model, such as the row count, user name, time stamp. Also, some of the columns has a lot of NA which could be excluded for our model. 
+```{r Cleaning, results="hide"}
+## Get rid of some columns that we don't care.
+cleanTraining <- training[ , -which(names(training) %in% c("X","user_name", "raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp", "new_window","num_window"))]
+
+## Get rid of columns that contains mostly NA, for 95% and up is NA 
+cleanTraining <- cleanTraining[,apply(cleanTraining, 2, function(col) (sum(is.na(col))/length(col))< 0.95)]
+str(cleanTraining)
+
+cleanColNames <- colnames(cleanTraining)
+cleanValidation <- validation[cleanColNames[-53]]
+str(cleanValidation)
+```
+We are using the format that if a column has 95% and more of the NA values, we exclude the column. Now we are down to 53 variables.
+Now let's split the data to training and testing using 60% for training, 40% for testing and fit some models. 
+#### Get training and testing sets
+```{r LoadLibrary, results="hide"}
+## Load library used
+suppressMessages(library(caret))
+suppressMessages(library(rpart))
+#library(rattle)
+suppressMessages(library(randomForest))
+suppressMessages(library(dplyr))
+suppressMessages(library(reshape2))
+
+## Set seeds
+set.seed(89999)
+
+## Split training/test
+inTrain <- createDataPartition(cleanTraining$classe, p=0.6, list=FALSE)
+actTraining <- cleanTraining[inTrain, ]
+actTesting <- cleanTraining[-inTrain, ]
+```
+
+Before fitting a model, we would like to know what variables might coolaete with classe.
+#### Find out what variable is correlate with each other
+```{r FindCorrelate}
+temp <- actTraining
+temp$classe <- as.numeric(temp$classe)
+corlMatrix<- data.frame(cor(temp))
+corlMatrix$name <- names(temp[1:53])
+corlEnd <- data.frame(cbind(corlMatrix$classe, corlMatrix$name))
+names(corlEnd) <- c("cor", "name")
+tail(arrange(corlEnd,cor), 13)
+```
+We could use some of these variables to fit the model, top 12 are roll_belt, magnet_dumbbell_x, accel_dumbbell_z, roll_arm, total_accel_belt, pitch_dumbbell, accel_dumbbell_x, total_accel_forearm, magnet_dumbbell_z, accel_arm_x, magnet_arm_x and  pitch_forearm. 
+
+### Fitting models
+Let us try to fit differnt models. Since the data has a lot of variables and also they seems to have catergories, regression tree seems to be a good choice. We could try that. 
+
+#### Regression tree
+```{r Tree}
+treeMod <- train(classe~., data = actTraining, method="rpart")
+print(treeMod$finalModel)
+
+# fancyRpartPlot(treeMod$finalModel)
+treePred <- predict(treeMod, newdata=actTesting)
+treeResult<-confusionMatrix(actTesting$classe, treePred)
+## Importance 
+varImp(treeMod)
+treeResult
+```
+The accuracy is of regression tree is only 0.4869. So this is not a very good model. Let's try random forest, since it is usually quite accurate but could be over fitting.
+
+#### Ramdom forest
+```{r RamdomForest}
+## Model
+rfMod <- randomForest(classe ~., data=actTraining)
+## Predict
+rfPred <- predict(rfMod,actTesting)
+## Accuracy
+rfResult<- confusionMatrix(actTesting$classe, rfPred)
+rfResult
+## Importance
+varImpPlot(rfMod)
+plot(rfMod)
+```
+
+The accuracy looks great, it is 0.993. And looking at the prediction table. 
+
+##### Let's see if by using few variables, if there is any indication of over fitting.
+```{r FitMultipleVariables}
+rfSmallMod <- randomForest(classe ~ roll_belt + magnet_dumbbell_x + accel_dumbbell_z + roll_arm + total_accel_belt + pitch_dumbbell + accel_dumbbell_x + total_accel_forearm + magnet_dumbbell_z + accel_arm_x + magnet_arm_x + pitch_forearm, data = actTraining)
+
+rfSmallPred <- predict(rfSmallMod,actTesting)
+rfSmallResult<- confusionMatrix(actTesting$classe, rfSmallPred)
+rfSmallResult
+```
+
+This fit is also pretty good, it has the accuracy of 0.9709. But seems like using all varibles does improve the accuracy. 
+Well, we could try another fitting, I assume it won't get better accuracy than random forest. 
+
+#### Boosted regression
+```{r Boosted}
+modControl <- trainControl(method = "repeatedcv", number = 6, repeats = 1)
+boostedMod<- train(classe ~ ., data=actTraining, method = "gbm", trControl = modControl, verbose = FALSE)
+boostedPre <- predict(boostedMod, newdata=actTesting)
+boostedResult <- confusionMatrix(actTesting$classe, boostedPre)
+boostedResult
+```
+Booting's accuracy is also pretty good, 0.9638 though it is not as good as random forest.   
+ 
+#### Cross validation
+Let's try to use random sampling to do cross validation. We split the training set itself up, into training and test sets over and over again. Keep rebuilding our models, and picking the one that works best on the test set. Here, we will resample 10 time and see which data set is the best. 
+```{r CorssValidation}
+set.seed(3000)
+
+## Get total number of data
+totalNumber <- nrow(cleanTraining)
+## Training is always 60 percent
+trainNumber <- round(totalNumber * 0.6)
+testNumber <- totalNumber - trainNumber;
+
+crossValidateResult <- as.data.frame(matrix(nrow=7, ncol=10))
+modelAccuracy <- vector();
+
+## Do this 10 times
+for (i in 1:10){
+  rowIndexes = sample(nrow(cleanTraining), trainNumber)
+  sampleTraining <- cleanTraining[rowIndexes,]
+  sampleTesting <- cleanTraining[-rowIndexes,]
+  
+  sampleMod <- randomForest(classe~., data=sampleTraining)
+  samplePre <-  predict(sampleMod, sampleTesting)
+  sampleResult <- confusionMatrix(sampleTesting$classe, samplePre)
+
+  modelAccuracy[i] <- sampleResult$overall["Accuracy"]
+  crossValidateResult[,i] <- sampleResult$overall
+  print(sampleResult$overall)
+}
+```
+
+#### Out of sample error
+
+```{r SampleError}
+## Get out of sample error
+ofsError = 1- mean(modelAccuracy)
+ofsError
+```
+The out of sample error is the average error of 10 samples. 
+
+### Conclusion
+Looking at different errors including sensitivity, specificity, random forest works the best among regression tree and boosting. The accuracy for random forest model is very high for the testing set. Also, the model indicates that most vairlibes are highly correlated with classe.
+Random forest model usually yields high accurate, however, data process time takes longer. Using less variables by selecting variables taht correlates to classe the most for ramdom forest model could speed up the process that could still have a reasonable good prediciton.  
+
