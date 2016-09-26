@@ -1,5 +1,5 @@
 ## Synopsis
-This is for Pratical Machine Learing class week 4 project. 
+This is for Practical Machine Learing class week 4 project. 
 
 ### Assignment: Prediction Assignment
 
